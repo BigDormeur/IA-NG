@@ -365,7 +365,7 @@ function findAnswer(query) {
 }
 
 // ── FALLBACK IA (Groq) pour les questions sans correspondance ──
-const GROQ_API_KEY = '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'; // 👈 Colle ta clé ici : console.groq.com
+const GROQ_API_KEY = 'REMPLACE_PAR_TA_CLE_GROQ'; // 👈 Colle ta clé ici : console.groq.com
 
 async function askClaudeAI(query) {
   const dbSummary = db.slice(0, 30).map(e => `Q: ${e.q}\nR: ${e.a}`).join('\n\n');
