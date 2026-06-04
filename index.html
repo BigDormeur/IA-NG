@@ -101,6 +101,53 @@ textarea::placeholder{color:var(--text2);}
 
 #setup-bar{padding:10px 24px;background:rgba(232,64,64,.08);border-bottom:1px solid rgba(232,64,64,.2);display:none;align-items:center;gap:12px;flex-shrink:0;}
 #setup-bar p{font-size:.82rem;color:#ff9090;flex:1;}
+
+/* ════════════════════════════════
+   FEEDBACK SYSTEM
+════════════════════════════════ */
+.feedback-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255,255,255,.05);
+}
+.feedback-label {
+  font-size: .7rem;
+  color: var(--text2);
+  letter-spacing: .04em;
+  flex: 1;
+}
+.fb-btn {
+  background: none;
+  border: 1px solid var(--border2);
+  border-radius: 20px;
+  padding: 3px 12px;
+  color: var(--text2);
+  font-family: 'Rajdhani', sans-serif;
+  font-size: .82rem;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transition: all .18s;
+  user-select: none;
+}
+.fb-btn:hover { transform: translateY(-1px); }
+.fb-btn.up:hover   { border-color: var(--green); color: var(--green); background: rgba(61,232,138,.07); }
+.fb-btn.down:hover { border-color: var(--red);   color: var(--red);   background: rgba(232,64,64,.07); }
+.fb-btn.voted-up   { border-color: var(--green); color: var(--green); background: rgba(61,232,138,.13); cursor: default; }
+.fb-btn.voted-down { border-color: var(--red);   color: var(--red);   background: rgba(232,64,64,.13); cursor: default; }
+.fb-btn.voted-up:hover,
+.fb-btn.voted-down:hover { transform: none; }
+.fb-thanks {
+  font-size: .72rem;
+  color: var(--text2);
+  animation: fadeUp .2s ease-out;
+  display: none;
+}
 </style>
 </head>
 <body>
@@ -159,6 +206,9 @@ textarea::placeholder{color:var(--text2);}
 // ══════════════════════════════════════════════════
 const SUPABASE_URL = 'https://ealaaexvnsuwunmhlpyx.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVhbGFhZXh2bnN1d3VubWhscHl4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAzNDAzMjEsImV4cCI6MjA5NTkxNjMyMX0.jkOvFjAdb_mXbGFyMsN3gyqXMIewIkNX5JhjL22Rlgk';
+
+// ── GROQ FALLBACK ──
+const GROQ_API_KEY = 'REMPLACE_PAR_TA_CLE_GROQ'; // 👈 console.groq.com
 
 let db = [];
 
@@ -232,10 +282,9 @@ async function init() {
 init();
 
 // ══════════════════════════════════════════════════
-// 🧠  MOTEUR DE RECHERCHE AMÉLIORÉ
+// 🧠  MOTEUR DE RECHERCHE — VERSION 2 (SEUILS STRICTS)
 // ══════════════════════════════════════════════════
 
-// Normalisation : minuscules + sans accents + sans ponctuation
 function normalize(str) {
   return str.toLowerCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -243,54 +292,47 @@ function normalize(str) {
     .replace(/\s+/g, ' ').trim();
 }
 
-// Tokenisation avec stopwords FR supprimés
-const STOPWORDS = new Set(['le','la','les','un','une','des','de','du','en','et','ou','à','au','aux','ce','cet','cette','ces','mon','ton','son','ma','ta','sa','mes','tes','ses','nous','vous','ils','elles','je','tu','il','elle','qui','que','quoi','dont','où','est','sont','être','avoir','faire','plus','pas','ne','se','si','car','mais','donc','or','ni','or','sur','sous','dans','par','pour','avec','sans','entre','vers','chez','puis','très','bien','tout','tous','toute','toutes','aussi','même','comme','quand','comment','pourquoi','quel','quelle','quels','quelles','autre','autres','ya','y','a','on','lui','leur','leurs','me','te','nous','vous','je','il','elle']);
+const STOPWORDS = new Set(['le','la','les','un','une','des','de','du','en','et','ou','a','au','aux','ce','cet','cette','ces','mon','ton','son','ma','ta','sa','mes','tes','ses','nous','vous','ils','elles','je','tu','il','elle','qui','que','quoi','dont','ou','est','sont','etre','avoir','faire','plus','pas','ne','se','si','car','mais','donc','or','ni','sur','sous','dans','par','pour','avec','sans','entre','vers','chez','puis','tres','bien','tout','tous','toute','toutes','aussi','meme','comme','quand','comment','pourquoi','quel','quelle','quels','quelles','autre','autres','ya','y','on','lui','leur','leurs','me','te']);
 
 function tokenize(str) {
   return normalize(str).split(' ').filter(t => t.length > 1 && !STOPWORDS.has(t));
 }
 
-// Distance de Levenshtein (pour la tolérance aux fautes)
 function levenshtein(a, b) {
   if (a === b) return 0;
-  if (a.length === 0) return b.length;
-  if (b.length === 0) return a.length;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
   const m = [];
   for (let i = 0; i <= b.length; i++) m[i] = [i];
   for (let j = 0; j <= a.length; j++) m[0][j] = j;
   for (let i = 1; i <= b.length; i++)
     for (let j = 1; j <= a.length; j++)
-      m[i][j] = b[i-1] === a[j-1] ? m[i-1][j-1] : Math.min(m[i-1][j-1]+1, m[i][j-1]+1, m[i-1][j]+1);
+      m[i][j] = b[i-1]===a[j-1] ? m[i-1][j-1] : Math.min(m[i-1][j-1]+1, m[i][j-1]+1, m[i-1][j]+1);
   return m[b.length][a.length];
 }
 
-// Similarité entre deux tokens (exacte > contient > levenshtein)
 function tokenSim(t, ref) {
   if (t === ref) return 1.0;
   if (ref.includes(t) || t.includes(ref)) return 0.7;
   const dist = levenshtein(t, ref);
   const maxLen = Math.max(t.length, ref.length);
-  if (dist <= 1 && maxLen >= 4) return 0.85; // faute de frappe
+  if (dist <= 1 && maxLen >= 4) return 0.85;
   if (dist <= 2 && maxLen >= 6) return 0.6;
   return 0;
 }
 
-// Synonymes / variantes sémantiques NationsGlory
 const SYNONYMS = {
   'guerre': ['war','attaque','attaquer','combat','declaration','declarer','conflit','ennemi'],
   'war': ['guerre','combat','attaque'],
   'joueur': ['player','membre','user','utilisateur','personne','gens'],
   'nouveau': ['new','novice','debutant','newbie','recent','junior','fresh'],
-  'declarer': ['lancer','faire','commencer','initier','declaration'],
+  'declarer': ['lancer','commencer','initier','declaration'],
   'nation': ['pays','country','territoire','etat','empire','royaume'],
   'argent': ['gold','monnaie','money','ressource','ressources','eco','economie'],
   'ban': ['bannir','sanctionner','punir','expulser','kick'],
   'alliance': ['allie','allies','partenaire','coalition','pacte'],
-  'heure': ['heures','h','hr','time','temps'],
-  'aide': ['help','support','assistance','question'],
-  'comment': ['how','comment faire','comment on','tutoriel','guide'],
-  'peut': ['possible','autoriser','autorisé','peut-on','peut on','est-ce qu','est ce qu'],
-  'faire': ['effectuer','realiser','accomplir','executer'],
+  'heure': ['heures','hr','time','temps'],
+  'aide': ['help','support','assistance'],
   'limite': ['restriction','interdit','autorise','regle','reglement','condition'],
 };
 
@@ -298,7 +340,6 @@ function expandTokens(tokens) {
   const expanded = new Set(tokens);
   for (const t of tokens) {
     if (SYNONYMS[t]) SYNONYMS[t].forEach(s => expanded.add(s));
-    // Cherche aussi si le token est une valeur dans les synonymes
     for (const [key, vals] of Object.entries(SYNONYMS)) {
       if (vals.includes(t)) expanded.add(key);
     }
@@ -306,7 +347,6 @@ function expandTokens(tokens) {
   return [...expanded];
 }
 
-// Score d'un champ contre les tokens de la requête
 function fieldScore(fieldText, queryTokens, weight) {
   const fieldTokens = tokenize(fieldText);
   let s = 0;
@@ -321,65 +361,134 @@ function fieldScore(fieldText, queryTokens, weight) {
   return s;
 }
 
-// Score global d'une entrée
 function scoreEntry(entry, queryTokens, expandedTokens) {
-  // Score sur tokens originaux (plus de poids)
   const qScore = fieldScore(entry.q, queryTokens, 3.0)
                + fieldScore(entry.a, queryTokens, 1.0)
                + fieldScore((entry.tags||[]).join(' '), queryTokens, 2.5);
-
-  // Score sur tokens étendus (synonymes)
   const eScore = fieldScore(entry.q, expandedTokens, 1.5)
                + fieldScore(entry.a, expandedTokens, 0.5)
                + fieldScore((entry.tags||[]).join(' '), expandedTokens, 1.2);
-
-  // Bonus : si la question de la base contient la totalité de la requête normalisée
   const normQuery = normalize(queryTokens.join(' '));
   const normQ = normalize(entry.q);
   const overlapBonus = normQ.includes(normQuery) ? 4 : 0;
-
   return qScore + eScore + overlapBonus;
 }
 
+// ── Compte le nombre de tokens de la requête qui ont un match solide (≥0.6) dans la question/tags ──
+function countMatchedTokens(entry, queryTokens) {
+  const fieldTokens = tokenize(entry.q + ' ' + (entry.tags||[]).join(' '));
+  let count = 0;
+  for (const qt of queryTokens) {
+    for (const ft of fieldTokens) {
+      if (tokenSim(qt, ft) >= 0.6) { count++; break; }
+    }
+  }
+  return count;
+}
+
+// ── MOTEUR PRINCIPAL — SEUILS STRICTS v2 ──
+// Avant : seuil bas dès 0.12 → réponses à n'importe quoi
+// Maintenant :
+//   HIGH  : ratio ≥ 0.55 ET au moins 50% des tokens matchés
+//   LOW   : ratio ≥ 0.30 ET au moins 1 token matché (avec avertissement clair)
+//   NONE  : tout le reste → "je ne sais pas"
 function findAnswer(query) {
   if (!db.length) return { type: 'empty' };
   const queryTokens = tokenize(query);
-  if (!queryTokens.length) return { type: 'empty' };
+  if (!queryTokens.length) return { type: 'none' };
+
   const expandedTokens = expandTokens(queryTokens);
+  const minMatchRequired = Math.max(1, Math.ceil(queryTokens.length * 0.5));
 
   const scored = db
-    .map(e => ({ entry: e, score: scoreEntry(e, queryTokens, expandedTokens) }))
-    .filter(x => x.score > 0)
+    .map(e => ({
+      entry: e,
+      score: scoreEntry(e, queryTokens, expandedTokens),
+      matched: countMatchedTokens(e, queryTokens)
+    }))
+    .filter(x => x.score > 0 && x.matched > 0)  // doit avoir au moins 1 token qui matche vraiment
     .sort((a, b) => b.score - a.score);
 
   if (!scored.length) return { type: 'none' };
 
   const best = scored[0];
-  // Ratio normalisé : score best / score max théorique
   const maxTheoretical = queryTokens.length * 3.0 + expandedTokens.length * 1.5;
   const ratio = best.score / maxTheoretical;
 
-  if (ratio >= 0.45) return { type: 'high', entry: best.entry };
-  if (ratio >= 0.12) return { type: 'low', entry: best.entry, alts: scored.slice(1, 4).map(x => x.entry) };
+  // HIGH : réponse fiable — seuils stricts
+  if (ratio >= 0.55 && best.matched >= minMatchRequired) {
+    return { type: 'high', entry: best.entry };
+  }
+  // LOW : réponse approximative — on prévient clairement
+  if (ratio >= 0.30 && best.matched >= 1) {
+    return { type: 'low', entry: best.entry, alts: scored.slice(1, 4).map(x => x.entry) };
+  }
+  // Rien de convaincant → ne pas inventer
   return { type: 'none' };
 }
 
-// ── FALLBACK IA (Groq) pour les questions sans correspondance ──
-const GROQ_API_KEY = 'REMPLACE_PAR_TA_CLE_GROQ'; // 👈 Colle ta clé ici : console.groq.com
+// ══════════════════════════════════════════════════
+// 🤖  FALLBACK GROQ — AVEC GARDE-FOU STRICT
+// ══════════════════════════════════════════════════
+// Avant : Groq répondait à n'importe quoi même hors-contexte
+// Maintenant : on vérifie d'abord si la question a le moindre lien
+// avec le domaine NationsGlory via un score de pertinence rapide.
+// Si rien ne ressemble → on refuse directement sans appeler Groq.
 
-async function askClaudeAI(query) {
-  const dbSummary = db.slice(0, 30).map(e => `Q: ${e.q}\nR: ${e.a}`).join('\n\n');
-  const prompt = `Tu es BigIA, l'assistant du serveur NationsGlory. Voici la base de connaissances du serveur :\n\n${dbSummary}\n\nUn joueur pose la question suivante : "${query}"\n\nRéponds de façon concise en utilisant uniquement les informations de la base. Si aucune info ne correspond, dis-le clairement. Ne t'invente rien.`;
+const DOMAIN_KEYWORDS = new Set([
+  'nationsglory','nation','nations','serveur','server','jeu','game','joueur','player',
+  'guerre','war','alliance','ban','money','argent','gold','eco','economie','ressource',
+  'admin','staff','regle','rule','map','territoire','empire','royaume','clan','guilde',
+  'rang','grade','role','discord','tchat','chat','pvp','raid','attaque','defense',
+  'vote','event','evenement','saison','season','reset','classement','top','leaderboard',
+  'premium','vip','boutique','shop','achat','commande','sanction','report','signaler',
+  'build','construction','base','ville','capital','capitale','spawn','coordonnee',
+  'tp','teleportation','inventaire','item','objet','craft','recette','commande'
+]);
+
+function queryHasDomainLink(query) {
+  const tokens = tokenize(query);
+  if (!tokens.length) return false;
+  // Vérifie si au moins 1 token appartient au domaine
+  for (const t of tokens) {
+    if (DOMAIN_KEYWORDS.has(t)) return true;
+    // Vérifie aussi si un token de la base matche (score direct avec la DB)
+    for (const entry of db.slice(0, 50)) {
+      const fieldTokens = tokenize(entry.q);
+      for (const ft of fieldTokens) {
+        if (tokenSim(t, ft) >= 0.8) return true;
+      }
+    }
+  }
+  return false;
+}
+
+async function askGroqAI(query) {
+  if (GROQ_API_KEY === 'REMPLACE_PAR_TA_CLE_GROQ') return null;
+
+  // Garde-fou : si la question n'a aucun rapport avec NationsGlory, ne pas appeler Groq
+  if (!queryHasDomainLink(query)) return '__hors_sujet__';
+
+  const dbSummary = db.slice(0, 40).map(e => `Q: ${e.q}\nR: ${e.a}`).join('\n\n');
+  const prompt = `Tu es BigIA, l'assistant du serveur Minecraft NationsGlory.
+Voici la base de connaissances officielle du serveur :
+
+${dbSummary}
+
+Question d'un joueur : "${query}"
+
+RÈGLES STRICTES :
+- Réponds UNIQUEMENT si la question concerne NationsGlory ou des sujets présents dans la base.
+- Si aucune information de la base ne correspond à la question, réponds EXACTEMENT : "Je n'ai pas d'information sur ce sujet dans ma base de connaissances."
+- Ne t'invente rien. Sois concis.`;
 
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + GROQ_API_KEY
-    },
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + GROQ_API_KEY },
     body: JSON.stringify({
       model: 'llama-3.3-70b-versatile',
-      max_tokens: 1000,
+      max_tokens: 500,
+      temperature: 0.2, // Réduit l'inventivité
       messages: [{ role: 'user', content: prompt }]
     })
   });
@@ -387,7 +496,9 @@ async function askClaudeAI(query) {
   return data.choices?.[0]?.message?.content || null;
 }
 
-// ── CHAT UI ──
+// ══════════════════════════════════════════════════
+// 💬  CHAT UI
+// ══════════════════════════════════════════════════
 async function sendMessage() {
   const input = document.getElementById('msg-input');
   const text = input.value.trim();
@@ -399,33 +510,107 @@ async function sendMessage() {
   const result = findAnswer(text);
 
   if (result.type === 'none' && db.length > 0) {
-    // Fallback vers Claude
     try {
-      const aiReply = await askClaudeAI(text);
+      const aiReply = await askGroqAI(text);
       removeEl(tid);
-      if (aiReply) {
-        appendAI(aiReply, 'ai', '✦ BigIA — Analyse contextuelle');
+      if (aiReply === '__hors_sujet__') {
+        appendAI(
+          'Cette question ne semble pas concerner NationsGlory.\n\nPose-moi une question sur le serveur, ses règles, ses mécaniques…',
+          'none', '❓ Hors sujet', null
+        );
+      } else if (aiReply) {
+        // Vérifie si Groq a lui-même reconnu ne pas savoir
+        const lc = aiReply.toLowerCase();
+        if (lc.includes("pas d'information") || lc.includes("je ne sais pas") || lc.includes("aucune information")) {
+          appendAI(aiReply, 'none', '❓ Aucun résultat', null);
+        } else {
+          appendAI(aiReply, 'ai', '✦ BigIA — Analyse contextuelle', { question: text, answer: aiReply, match_type: 'ai' });
+        }
       } else {
-        appendAI('Aucune réponse trouvée. Essaie de reformuler !', 'none', 'Aucun résultat');
+        appendAI('Je ne connais pas la réponse à cette question.\n\nEssaie de reformuler ou contacte un admin !', 'none', '❓ Aucun résultat', null);
       }
     } catch(e) {
       removeEl(tid);
-      appendAI('Aucune réponse trouvée pour cette question.\n\nEssaie de reformuler !', 'none', 'Aucun résultat');
+      appendAI('Je ne connais pas la réponse à cette question.\n\nEssaie de reformuler ou contacte un admin !', 'none', '❓ Aucun résultat', null);
     }
   } else {
-    setTimeout(() => { removeEl(tid); renderAnswer(result); }, 400);
+    setTimeout(() => { removeEl(tid); renderAnswer(result, text); }, 400);
   }
 }
 
-function renderAnswer(result) {
-  if (result.type === 'empty') { appendAI('La base est vide pour l\'instant. Reviens plus tard !', 'none', 'Base vide'); return; }
-  if (result.type === 'none') { appendAI('Aucune réponse trouvée pour cette question.\n\nEssaie de reformuler !', 'none', 'Aucun résultat'); return; }
-  if (result.type === 'high') { appendAI(result.entry.a, 'high', 'Réponse trouvée ✓'); return; }
-  let txt = result.entry.a + '\n\n⚠ Réponse approximative.';
-  if (result.alts && result.alts.length) txt += '\n\nSujets proches : ' + result.alts.map(e=>'« '+e.q+' »').join(', ');
-  appendAI(txt, 'low', 'Résultat approximatif');
+function renderAnswer(result, query) {
+  if (result.type === 'empty') {
+    appendAI('La base est vide pour l\'instant. Reviens plus tard !', 'none', 'Base vide', null);
+    return;
+  }
+  if (result.type === 'none') {
+    appendAI('Je ne connais pas la réponse à cette question.\n\nEssaie de reformuler ou contacte un admin !', 'none', '❓ Aucun résultat', null);
+    return;
+  }
+  if (result.type === 'high') {
+    appendAI(result.entry.a, 'high', 'Réponse trouvée ✓',
+      { faq_id: result.entry.id, question: query, answer: result.entry.a, match_type: 'high' });
+    return;
+  }
+  let txt = result.entry.a + '\n\n⚠ Résultat approximatif — vérifie avec un admin si besoin.';
+  if (result.alts?.length) txt += '\n\nSujets proches : ' + result.alts.map(e=>'« '+e.q+' »').join(', ');
+  appendAI(txt, 'low', '⚠ Résultat approximatif',
+    { faq_id: result.entry.id, question: query, answer: result.entry.a, match_type: 'low' });
 }
 
+// ══════════════════════════════════════════════════
+// 👍👎  SYSTÈME DE FEEDBACK
+// ══════════════════════════════════════════════════
+// Sauvegarde dans la table `feedback` de Supabase.
+// Quand le joueur vote 👍 sur une réponse HIGH/LOW :
+//   → la question posée est enregistrée comme alias potentiel
+//   → l'auto-train peut ensuite utiliser ces données
+// Quand le joueur vote 👎 :
+//   → flaggé pour review admin (needs_review = true)
+
+async function sendFeedback(rowId, vote, feedbackData) {
+  const row = document.getElementById(rowId);
+  if (!row || row.dataset.voted) return;
+  row.dataset.voted = '1';
+
+  // Met à jour les boutons immédiatement (UX)
+  const btns = row.querySelectorAll('.fb-btn');
+  btns.forEach(b => {
+    b.disabled = true;
+    if ((vote === 1 && b.classList.contains('up')) || (vote === -1 && b.classList.contains('down'))) {
+      b.classList.add(vote === 1 ? 'voted-up' : 'voted-down');
+    } else {
+      b.style.opacity = '0.3';
+    }
+  });
+  const thanks = row.querySelector('.fb-thanks');
+  if (thanks) {
+    thanks.style.display = 'inline';
+    thanks.textContent = vote === 1 ? '✓ Merci !' : '✓ Noté !';
+  }
+
+  // Enregistre dans Supabase
+  try {
+    await sbFetch('feedback', {
+      method: 'POST',
+      headers: { 'Prefer': 'return=minimal' },
+      body: JSON.stringify({
+        faq_id:       feedbackData.faq_id || null,
+        question:     feedbackData.question,
+        answer:       feedbackData.answer,
+        match_type:   feedbackData.match_type,
+        vote:         vote,           // +1 ou -1
+        needs_review: vote === -1,    // 👎 → à revoir par un admin
+        created_at:   new Date().toISOString()
+      })
+    });
+  } catch(e) {
+    // Silencieux côté joueur — le feedback UI est déjà appliqué
+    console.warn('Feedback non sauvegardé :', e.message);
+  }
+}
+
+// ── HELPERS UI ──
 function appendMsg(role, text) {
   const box = document.getElementById('chat-messages');
   const d = document.createElement('div');
@@ -433,14 +618,37 @@ function appendMsg(role, text) {
   d.innerHTML = `<div class="av">${role==='ai'?'IA':'Tu'}</div><div class="bubble">${formatText(text)}</div>`;
   box.appendChild(d); box.scrollTop = box.scrollHeight;
 }
-function appendAI(text, conf, label) {
+
+// feedbackData = { faq_id?, question, answer, match_type } ou null
+function appendAI(text, conf, label, feedbackData) {
   const box = document.getElementById('chat-messages');
   const d = document.createElement('div');
   d.className = 'msg ai';
   const cc = conf==='high'?'conf-high':conf==='low'?'conf-low':conf==='ai'?'conf-ai':'conf-none';
-  d.innerHTML = `<div class="av">IA</div><div class="bubble">${formatText(text)}<div class="confidence ${cc}">${label}</div></div>`;
+
+  // On propose le feedback uniquement quand l'IA a vraiment répondu quelque chose
+  let fbHtml = '';
+  if (feedbackData && conf !== 'none') {
+    const fbId = 'fb-' + Date.now() + '-' + Math.random().toString(36).slice(2,6);
+    const safeData = JSON.stringify(feedbackData).replace(/"/g, '&quot;');
+    fbHtml = `
+      <div class="feedback-row" id="${fbId}">
+        <span class="feedback-label">Cette réponse t'a aidé ?</span>
+        <button class="fb-btn up"   onclick="sendFeedback('${fbId}', 1,  JSON.parse(this.closest('.feedback-row').dataset.fd))">👍</button>
+        <button class="fb-btn down" onclick="sendFeedback('${fbId}', -1, JSON.parse(this.closest('.feedback-row').dataset.fd))">👎</button>
+        <span class="fb-thanks"></span>
+      </div>`;
+    // On stocke feedbackData sur l'élément via data attribute (évite les problèmes d'échappement inline)
+    setTimeout(() => {
+      const el = document.getElementById(fbId);
+      if (el) el.dataset.fd = JSON.stringify(feedbackData);
+    }, 0);
+  }
+
+  d.innerHTML = `<div class="av">IA</div><div class="bubble">${formatText(text)}<div class="confidence ${cc}">${label}</div>${fbHtml}</div>`;
   box.appendChild(d); box.scrollTop = box.scrollHeight;
 }
+
 function appendTyping() {
   const box = document.getElementById('chat-messages');
   const id = 'tp-'+Date.now();
@@ -449,7 +657,9 @@ function appendTyping() {
   d.innerHTML=`<div class="av">IA</div><div class="bubble"><div class="typing-dots"><span></span><span></span><span></span></div></div>`;
   box.appendChild(d); box.scrollTop=box.scrollHeight; return id;
 }
+
 function removeEl(id){const e=document.getElementById(id);if(e)e.remove();}
+
 function formatText(text) {
   text = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   text = text.replace(/\*\*(.*?)\*\*/g,'<b>$1</b>');
@@ -458,8 +668,10 @@ function formatText(text) {
   text = text.replace(/\n/g,'<br>');
   return text;
 }
+
 function handleKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}}
 function autoResize(el){el.style.height='46px';el.style.height=Math.min(el.scrollHeight,110)+'px';}
+
 function renderQuickButtons() {
   const row = document.getElementById('quick-row');
   row.innerHTML = '';
@@ -471,6 +683,7 @@ function renderQuickButtons() {
     row.appendChild(btn);
   });
 }
+
 function toast(msg, type) {
   const t = document.getElementById('toast');
   t.textContent = msg; t.className = 'show '+(type||'');
