@@ -207,9 +207,6 @@ textarea::placeholder{color:var(--text2);}
 const SUPABASE_URL = 'https://ealaaexvnsuwunmhlpyx.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVhbGFhZXh2bnN1d3VubWhscHl4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAzNDAzMjEsImV4cCI6MjA5NTkxNjMyMX0.jkOvFjAdb_mXbGFyMsN3gyqXMIewIkNX5JhjL22Rlgk';
 
-// ── GROQ FALLBACK ──
-const GROQ_API_KEY = 'REMPLACE_PAR_TA_CLE_GROQ'; // 👈 console.groq.com
-
 let db = [];
 
 // ── SUPABASE REST ──
@@ -282,7 +279,7 @@ async function init() {
 init();
 
 // ══════════════════════════════════════════════════
-// 🧠  MOTEUR DE RECHERCHE — VERSION 2 (SEUILS STRICTS)
+// 🧠  MOTEUR DE RECHERCHE — VERSION 3 (FIX FAUX-POSITIFS COURTS)
 // ══════════════════════════════════════════════════
 
 function normalize(str) {
@@ -292,7 +289,9 @@ function normalize(str) {
     .replace(/\s+/g, ' ').trim();
 }
 
-const STOPWORDS = new Set(['le','la','les','un','une','des','de','du','en','et','ou','a','au','aux','ce','cet','cette','ces','mon','ton','son','ma','ta','sa','mes','tes','ses','nous','vous','ils','elles','je','tu','il','elle','qui','que','quoi','dont','ou','est','sont','etre','avoir','faire','plus','pas','ne','se','si','car','mais','donc','or','ni','sur','sous','dans','par','pour','avec','sans','entre','vers','chez','puis','tres','bien','tout','tous','toute','toutes','aussi','meme','comme','quand','comment','pourquoi','quel','quelle','quels','quelles','autre','autres','ya','y','on','lui','leur','leurs','me','te']);
+// Ajout des salutations courantes : "bonjour"/"salut" ne doivent jamais être traités
+// comme des mots-clés de recherche, sinon ils peuvent matcher n'importe quelle entrée.
+const STOPWORDS = new Set(['le','la','les','un','une','des','de','du','en','et','ou','a','au','aux','ce','cet','cette','ces','mon','ton','son','ma','ta','sa','mes','tes','ses','nous','vous','ils','elles','je','tu','il','elle','qui','que','quoi','dont','ou','est','sont','etre','avoir','faire','plus','pas','ne','se','si','car','mais','donc','or','ni','sur','sous','dans','par','pour','avec','sans','entre','vers','chez','puis','tres','bien','tout','tous','toute','toutes','aussi','meme','comme','quand','comment','pourquoi','quel','quelle','quels','quelles','autre','autres','ya','y','on','lui','leur','leurs','me','te','bonjour','bonsoir','salut','hello','coucou','hey','merci','svp','stp']);
 
 function tokenize(str) {
   return normalize(str).split(' ').filter(t => t.length > 1 && !STOPWORDS.has(t));
@@ -311,9 +310,16 @@ function levenshtein(a, b) {
   return m[b.length][a.length];
 }
 
+// FIX : avant, "ref.includes(t) || t.includes(ref)" donnait 0.7 dès qu'un mot était
+// une sous-chaîne d'un autre — donc "bonjour" matchait "jour" (présent dans plein
+// d'entrées sans rapport) et l'IA répondait des choses sur les guerres à un simple
+// "bonjour". Maintenant : il faut que le mot le plus court fasse au moins 5 lettres
+// ET représente au moins 60% de la longueur du mot le plus long.
 function tokenSim(t, ref) {
   if (t === ref) return 1.0;
-  if (ref.includes(t) || t.includes(ref)) return 0.7;
+  const shorter = t.length <= ref.length ? t : ref;
+  const longer  = t.length <= ref.length ? ref : t;
+  if (longer.includes(shorter) && shorter.length >= 5 && shorter.length / longer.length >= 0.6) return 0.7;
   const dist = levenshtein(t, ref);
   const maxLen = Math.max(t.length, ref.length);
   if (dist <= 1 && maxLen >= 4) return 0.85;
@@ -370,7 +376,9 @@ function scoreEntry(entry, queryTokens, expandedTokens) {
                + fieldScore((entry.tags||[]).join(' '), expandedTokens, 1.2);
   const normQuery = normalize(queryTokens.join(' '));
   const normQ = normalize(entry.q);
-  const overlapBonus = normQ.includes(normQuery) ? 4 : 0;
+  // FIX : on exige aussi une longueur minimale pour le bonus d'inclusion, sinon une
+  // requête très courte (donc peu spécifique) peut artificiellement gonfler le score.
+  const overlapBonus = (normQuery.length >= 4 && normQ.includes(normQuery)) ? 4 : 0;
   return qScore + eScore + overlapBonus;
 }
 
@@ -387,8 +395,6 @@ function countMatchedTokens(entry, queryTokens) {
 }
 
 // ── MOTEUR PRINCIPAL — SEUILS STRICTS v2 ──
-// Avant : seuil bas dès 0.12 → réponses à n'importe quoi
-// Maintenant :
 //   HIGH  : ratio ≥ 0.55 ET au moins 50% des tokens matchés
 //   LOW   : ratio ≥ 0.30 ET au moins 1 token matché (avec avertissement clair)
 //   NONE  : tout le reste → "je ne sais pas"
@@ -430,10 +436,11 @@ function findAnswer(query) {
 // ══════════════════════════════════════════════════
 // 🤖  FALLBACK GROQ — AVEC GARDE-FOU STRICT
 // ══════════════════════════════════════════════════
-// Avant : Groq répondait à n'importe quoi même hors-contexte
-// Maintenant : on vérifie d'abord si la question a le moindre lien
-// avec le domaine NationsGlory via un score de pertinence rapide.
-// Si rien ne ressemble → on refuse directement sans appeler Groq.
+// IMPORTANT : la clé Groq ne doit JAMAIS être codée en dur ici (côté client, elle est
+// visible par n'importe qui via "Voir le code source"). Mets ce fallback derrière un
+// petit relais serveur (edge function Supabase, Cloudflare Worker, etc.) qui garde la
+// clé secrète et applique le même garde-fou avant d'appeler Groq.
+const GROQ_PROXY_URL = ''; // 👈 URL de ton relais serveur (laisse vide pour désactiver le fallback)
 
 const DOMAIN_KEYWORDS = new Set([
   'nationsglory','nation','nations','serveur','server','jeu','game','joueur','player',
@@ -443,16 +450,14 @@ const DOMAIN_KEYWORDS = new Set([
   'vote','event','evenement','saison','season','reset','classement','top','leaderboard',
   'premium','vip','boutique','shop','achat','commande','sanction','report','signaler',
   'build','construction','base','ville','capital','capitale','spawn','coordonnee',
-  'tp','teleportation','inventaire','item','objet','craft','recette','commande'
+  'tp','teleportation','inventaire','item','objet','craft','recette'
 ]);
 
 function queryHasDomainLink(query) {
   const tokens = tokenize(query);
   if (!tokens.length) return false;
-  // Vérifie si au moins 1 token appartient au domaine
   for (const t of tokens) {
     if (DOMAIN_KEYWORDS.has(t)) return true;
-    // Vérifie aussi si un token de la base matche (score direct avec la DB)
     for (const entry of db.slice(0, 50)) {
       const fieldTokens = tokenize(entry.q);
       for (const ft of fieldTokens) {
@@ -464,9 +469,7 @@ function queryHasDomainLink(query) {
 }
 
 async function askGroqAI(query) {
-  if (GROQ_API_KEY === 'REMPLACE_PAR_TA_CLE_GROQ') return null;
-
-  // Garde-fou : si la question n'a aucun rapport avec NationsGlory, ne pas appeler Groq
+  if (!GROQ_PROXY_URL) return null;
   if (!queryHasDomainLink(query)) return '__hors_sujet__';
 
   const dbSummary = db.slice(0, 40).map(e => `Q: ${e.q}\nR: ${e.a}`).join('\n\n');
@@ -482,18 +485,14 @@ RÈGLES STRICTES :
 - Si aucune information de la base ne correspond à la question, réponds EXACTEMENT : "Je n'ai pas d'information sur ce sujet dans ma base de connaissances."
 - Ne t'invente rien. Sois concis.`;
 
-  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+  const res = await fetch(GROQ_PROXY_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + GROQ_API_KEY },
-    body: JSON.stringify({
-      model: 'llama-3.3-70b-versatile',
-      max_tokens: 500,
-      temperature: 0.2, // Réduit l'inventivité
-      messages: [{ role: 'user', content: prompt }]
-    })
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt })
   });
+  if (!res.ok) throw new Error('Relais IA indisponible.');
   const data = await res.json();
-  return data.choices?.[0]?.message?.content || null;
+  return data.content || null;
 }
 
 // ══════════════════════════════════════════════════
@@ -519,7 +518,6 @@ async function sendMessage() {
           'none', '❓ Hors sujet', null
         );
       } else if (aiReply) {
-        // Vérifie si Groq a lui-même reconnu ne pas savoir
         const lc = aiReply.toLowerCase();
         if (lc.includes("pas d'information") || lc.includes("je ne sais pas") || lc.includes("aucune information")) {
           appendAI(aiReply, 'none', '❓ Aucun résultat', null);
@@ -561,19 +559,11 @@ function renderAnswer(result, query) {
 // ══════════════════════════════════════════════════
 // 👍👎  SYSTÈME DE FEEDBACK
 // ══════════════════════════════════════════════════
-// Sauvegarde dans la table `feedback` de Supabase.
-// Quand le joueur vote 👍 sur une réponse HIGH/LOW :
-//   → la question posée est enregistrée comme alias potentiel
-//   → l'auto-train peut ensuite utiliser ces données
-// Quand le joueur vote 👎 :
-//   → flaggé pour review admin (needs_review = true)
-
 async function sendFeedback(rowId, vote, feedbackData) {
   const row = document.getElementById(rowId);
   if (!row || row.dataset.voted) return;
   row.dataset.voted = '1';
 
-  // Met à jour les boutons immédiatement (UX)
   const btns = row.querySelectorAll('.fb-btn');
   btns.forEach(b => {
     b.disabled = true;
@@ -589,7 +579,6 @@ async function sendFeedback(rowId, vote, feedbackData) {
     thanks.textContent = vote === 1 ? '✓ Merci !' : '✓ Noté !';
   }
 
-  // Enregistre dans Supabase
   try {
     await sbFetch('feedback', {
       method: 'POST',
@@ -599,13 +588,12 @@ async function sendFeedback(rowId, vote, feedbackData) {
         question:     feedbackData.question,
         answer:       feedbackData.answer,
         match_type:   feedbackData.match_type,
-        vote:         vote,           // +1 ou -1
-        needs_review: vote === -1,    // 👎 → à revoir par un admin
+        vote:         vote,
+        needs_review: vote === -1,
         created_at:   new Date().toISOString()
       })
     });
   } catch(e) {
-    // Silencieux côté joueur — le feedback UI est déjà appliqué
     console.warn('Feedback non sauvegardé :', e.message);
   }
 }
@@ -619,18 +607,15 @@ function appendMsg(role, text) {
   box.appendChild(d); box.scrollTop = box.scrollHeight;
 }
 
-// feedbackData = { faq_id?, question, answer, match_type } ou null
 function appendAI(text, conf, label, feedbackData) {
   const box = document.getElementById('chat-messages');
   const d = document.createElement('div');
   d.className = 'msg ai';
   const cc = conf==='high'?'conf-high':conf==='low'?'conf-low':conf==='ai'?'conf-ai':'conf-none';
 
-  // On propose le feedback uniquement quand l'IA a vraiment répondu quelque chose
   let fbHtml = '';
   if (feedbackData && conf !== 'none') {
     const fbId = 'fb-' + Date.now() + '-' + Math.random().toString(36).slice(2,6);
-    const safeData = JSON.stringify(feedbackData).replace(/"/g, '&quot;');
     fbHtml = `
       <div class="feedback-row" id="${fbId}">
         <span class="feedback-label">Cette réponse t'a aidé ?</span>
@@ -638,7 +623,6 @@ function appendAI(text, conf, label, feedbackData) {
         <button class="fb-btn down" onclick="sendFeedback('${fbId}', -1, JSON.parse(this.closest('.feedback-row').dataset.fd))">👎</button>
         <span class="fb-thanks"></span>
       </div>`;
-    // On stocke feedbackData sur l'élément via data attribute (évite les problèmes d'échappement inline)
     setTimeout(() => {
       const el = document.getElementById(fbId);
       if (el) el.dataset.fd = JSON.stringify(feedbackData);
